@@ -578,6 +578,7 @@ pragma solidity ^0.8.2;
 
 contract piggyGame  is Ownable {
     using Address for address;
+    address burnAddress = 0x000000000000000000000000000000000000dead;
     // game pool fund (default 5%)
     uint16 public gamePoolFund = 5;
     address gamePoolFundAddress;
@@ -752,12 +753,13 @@ contract piggyGame  is Ownable {
         uint256 gamePoolFundAmount = (amount * gamePoolFund /100);
         uint256 reflectionAmount  = (amount * reflection / 100);
         uint256 balance = (amount - (gamePoolFundAmount + reflectionAmount));
+
         // send to gamefund
         _piggyToken.transfer(gamePoolFundAddress , gamePoolFundAmount);
         // reflect to users
         _piggyToken.transfer(gamePoolFundAddress ,   reflectionAmount); 
         
-        
+       
          // capture innitial Eth balance
          uint256 innitialEthBalance = address(this).balance;
          
@@ -770,12 +772,14 @@ contract piggyGame  is Ownable {
 
          require(afterEthBalance > innitialEthBalance , "Nagative Swap occured");
          // capture  Eth received
+         
          uint256 EthRecieved = afterEthBalance - innitialEthBalance;
          
          //SwapEthForToken
          swapEthForTokens(EthRecieved);
          
          //burn remaining tokens;
+        _piggyToken.transfer(burnAddress , _piggyToken.balanceOf(address(this)));
          //roll base on amount of token supply 
          bool getreward = canGetReward(amount);
          if(getreward){ 
