@@ -590,6 +590,28 @@ abstract contract Ownable is Context {
     }
 }
 
+interface boosterNFT {
+        /**
+     * @dev Emitted when `value` tokens of token type `id` are transferred from `from` to `to` by `operator`.
+     */
+    event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
+    
+    //minter function 
+    function mintReward(address recipient, uint256 rewardID) external returns (bool);
+    
+    //burn  function 
+    function burn(address from, uint256 rewardID, uint256 amount) external;
+    
+     /**
+     * @dev Returns the amount of tokens of token type `id` owned by `account`.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function balanceOf(address account, uint256 id) external view returns (uint256);
+
+}
 
 // SPDX-License-Identifier: GPL-3.0
 
@@ -597,24 +619,26 @@ pragma solidity ^0.8.2;
 
 contract piggyGame  is Ownable {
     using Address for address;
-    address public burnAddress ;
+   
+   
+   // reward NFT address
+   boosterNFT public _boosterNFT;
+   
     // game pool fund (default 5%)
     uint16 public gamePoolFund = 5;
     address gamePoolFundAddress;
-    // holders refletion (default 10%).
-    uint16 public reflection = 10;
-    address public reflectionAddress;
+    
     //contract operation
     address  public _operator;
    
     
-    // token burn grade 
-    uint256  public commonGrade = 1000000 ether;
-    uint256 public  rareGrade = 10000000 ether;
-    uint256 public legendaryGrade = 100000000 ether; 
+    // token  grade * 10**9 because that the default piggy decimal
+    uint256  public commonThreshold = 1 *  10**6  * 10**9;
+    uint256 public  rareThreshold = 10 * 10**6 *10**9;
+    uint256 public  legendaryThreshold = 100 * 10**6  *10**9; 
     
     
-    // chances per grade
+    // chances per grade based on threshold
    uint256  public commonGradeChance = 2;
     uint256 public rareGradeChance = 300;
     uint256 public legendaryGradeChance = 500;
@@ -625,24 +649,33 @@ contract piggyGame  is Ownable {
     uint256  public maxChance =1000;
     
     //ease level 
-    //degree of ease for prodition
-    uint256  easelevel = 40;
+    //degree of ease of prediction
+    uint256  easelevel = 100;
     
     
-    //boost burn threshold / rate 
+    //rewardNFT IDS
+    uint256 public constant COMMON = 0;
+    uint256 public constant RARE = 1;
+    uint256 public constant LEGENDARY = 2;
+   
     
-    uint256  public commonBurnTreshold = 10;
-    uint256 public rareBurnTreshold = 10;
-
-    uint256   commonBurnRate = 11;
-    uint256   rareBurnRate = 120;
     
+    // reroll _params
+    //thresholds
+    
+    uint256  public commonRerollThreshold = 10;
+    uint256  public rareRerollThreshold = 10;
+    
+    //chances
+    
+    uint256  public commonRerollChance = 11;
+    uint256  public rareRerollChance = 120;
     
     
     uint256 nonce;
     
     
-    // The swap router, modifiable. Will be changed to TestSwap's router when our own AMM release
+    // The swap router, modifiable.
     IUniswapV2Router02 public testSwapRouter;
     // The trading pair
     address public testSwapPair;
@@ -661,30 +694,35 @@ contract piggyGame  is Ownable {
         uint256 rare;
         uint256 common;
     }
-    struct player {
-        address playerAddress;
-        boosterLevels playerBoosterLevels;
-        uint256 gamePlayed;
-        uint256 rewardsEarned;
+    
+     struct player {
+        uint256 gamesPlayed;
+        uint256 bootsterPacks;
        
         
     }
     //game players
     mapping(address => player) public players;
-    //check if players is lengendary
-    mapping(address => bool) public isLengendary;
-    //contains all lendary players to distribute reward easily
-    address[] public lengendaryHolders;
+    
+   
+    
     
      chances public defaultChances;
+     
+     
+     //internals
+     uint256 private requiredGuess ;
+     uint256 private actualGuess  ;
+     uint256 private degreeOfRandomness ; 
+     uint256 private playchance;
      
     //setup the piggyGame contract
     //@dev innitializes the owner and _operator
     //@_params piggyAddress is the address of the piggy token
-    constructor(IBEP20 piggyToken , address _burnAddress){
+    constructor(IBEP20 piggyToken , boosterNFT _boosterNFTAddress){
        _piggyToken = piggyToken ;
-       burnAddress = _burnAddress;
-       _operator = msg.sender;
+       _boosterNFT = _boosterNFTAddress;
+       _operator = _msgSender();
       
     }
     
@@ -699,93 +737,51 @@ contract piggyGame  is Ownable {
         _;
     }
     
-    //event
-     event TestSwapRouterUpdated(address indexed operator, address indexed router, address indexed pair);
+    //events 
+     event  TestSwapRouterUpdated(address indexed operator, address indexed router, address indexed pair);
+     event  OperatorTransferred(address indexed previousOperator, address indexed newOperator);
+     event  gamePoolFundAddressUpdated(address indexed operator , address indexed gameFundAddress);
+     event  amountThresholdUpdated(address indexed operator , uint256  commonThreshold ,  uint256  rareThreshold ,  uint256  legendaryThreshold);
+     event  defaultGameChanceUpdated(address indexed operator , uint256  commonChance ,  uint256  rareChance ,  uint256  legendaryChance);
+     event  rerollThresholdUpdated(address indexed operator , uint256  previous_commonRerollThreshold ,  uint256 new_commonRerollThreshold , uint256  previous_rareRerollThreshold ,  uint256 new_rareRerollThreshold );
+     event  rerollChancesUpdated(address indexed operator , uint256  previous_commonRerollChance ,  uint256 new_commonRerollChance , uint256  previous_rareRerollChance ,  uint256 new_rareRerollChance );
+     event  gameEaseLevelUpdated(address indexed operator , uint256 _easelevel);
+     event  charged(address indexed player, uint256 amount);
+     event  attacked(address indexed player, uint256 amount);
+     event  rewardEarned(address indexed player , uint256 rewardID);
+     event  gamePlayed(address indexed player , bool earnedReward , uint256 easelevel , uint256 requiredGuess , uint256 actualGuess  , uint256 degreeOfRandomness , uint256 playchance );
+      
      /**
      * @dev Returns the address of the current operator.
      */
     function operator() public view returns (address) {
         return _operator;
     }
-    function setGamePoolFundAddress(address _gamePoolFundAddress) public onlyOperator {
-        gamePoolFundAddress  = _gamePoolFundAddress;
-    }
-    function setReflectionFundAddress(address _reflectionAddress) public onlyOperator {
-        reflectionAddress  = _reflectionAddress;
-    }
-     /**
-     * @dev Transfers ownership of the contract to a new account (`newOwner`).
-     * Can only be called by the current owner.
-     */
-    function transferOperator(address newOperator) public  onlyOperator {
-        require(newOperator != address(0), " new operator is the zero address");
-        // emit OperatorTransferred(_operator, newOperator);
-        _operator = newOperator;
-    }
-    // adjust the minumun amount to burn
-    function AdjustBurnMinimums(uint256 common_min , uint256 rare_min , uint legendary_min) public onlyOperator{
-        commonGrade = common_min;
-        rareGrade = rare_min;
-        legendaryGrade = legendary_min; 
-    }
-    // @dev  modify ease level ranges from 10 - 100;
-    // @_param easelevel
-     function setEaseLevel(uint256 _easelevel) public onlyOperator{
-         require(_easelevel > 10 && _easelevel < 200 , "Ease level out of range");
-            easelevel = _easelevel;
-    }
-    // adjusting the default chances of getting a common a rar and a lengendary
-    //@_param_common chances for common
-    //@_param_rare chances for rare
-    //@_param_legendary chances for legendary
-    function setDefaultChances(uint256 common  , uint256 rare , uint256 legendary ) public onlyOperator {
-        require(
-             common <=1000 &&
-             rare <=1000 &&
-             legendary <=1000 ,
-             "Invalid parameter set range should be less<= 1000"
-             );
-             defaultChances.legendary = legendary;
-             defaultChances.rare = rare;
-             defaultChances.common = common;
-        
-    }
-    //set booster burn threshold and rate
-    // burn threshold is the minimun of booster the can be burnt for an increase in chance of getting legendary;
-    // burn rate is the value increase in chance for each burn.
-    function setDefaultChances(uint256 _commonBurnTreshold  , uint256 _commonBurnRate ,uint256 _rareBurnTreshold, uint256 _rareBurnRate ) public onlyOperator {
-      
-             commonBurnTreshold = _commonBurnTreshold;
-             commonBurnRate = _commonBurnRate;
-             rareBurnTreshold = _rareBurnTreshold;
-             rareBurnRate = _rareBurnRate;
-    }
-    function play(uint256 amount)  public  {
+   
+    function deposit(uint256 amount)  public  {
         uint256 tokenbalance =_piggyToken.balanceOf(msg.sender);
-         require( tokenbalance >= amount && amount >= commonGrade , "insuficient funds");
+         require( tokenbalance >= amount , "insuficient funds");
+         require(amount >= commonThreshold ,"Amount below minimun play amount");
          
          //Transfer token to piggyGame contract
         _piggyToken.transferFrom(msg.sender, address(this), amount);
         
-         
-         
         //Transfer to gamePoolFund default 5% 
         uint256 gamePoolFundAmount = (amount * gamePoolFund /100);
-        uint256 reflectionAmount  = (amount * reflection / 100);
-        uint256 balance = (amount - (gamePoolFundAmount + reflectionAmount));
+        uint256 balance = (amount - (gamePoolFundAmount));
 
         // send to gamefund
         _piggyToken.transfer(gamePoolFundAddress , gamePoolFundAmount);
-        // reflect to users
-        _piggyToken.transfer(gamePoolFundAddress ,   reflectionAmount); 
-        
+      
        
          // capture innitial Eth balance
          uint256 innitialEthBalance = address(this).balance;
          
-         //swap back and forth
-         swapTokensForEth(balance);
+          
+         //_charge 
          
+         _charge(balance);
+        
          // capture  Eth balance After
          uint256 afterEthBalance = address(this).balance;
          
@@ -795,68 +791,123 @@ contract piggyGame  is Ownable {
          
          uint256 EthRecieved = afterEthBalance - innitialEthBalance;
          
+         
+         //balance of piggy before attack
+         uint256 tokenbalanceBeforeAttack =_piggyToken.balanceOf(address(this));
+         
+         //attack
          //SwapEthForToken
-         swapEthForTokens(EthRecieved);
          
-         //burn remaining tokens;
-        _piggyToken.transfer(burnAddress , _piggyToken.balanceOf(address(this)));
+         _attack(EthRecieved);
+         
+           //balance of piggy after attack
+          uint256 tokenbalanceAfterAttack =_piggyToken.balanceOf(address(this));
+         
+            require(tokenbalanceAfterAttack > tokenbalanceBeforeAttack , "Nagative Swap occured");
+            
+          //token balance to send to user
+          balance = tokenbalanceAfterAttack - tokenbalanceBeforeAttack;
+         //refund the remaining  remaining tokens;
+        _piggyToken.transfer(msg.sender , balance);
          //roll base on amount of token supply 
-         bool getreward = canGetReward(amount);
-         if(getreward){ 
-            getReward(); 
+        
+         if(canGetReward(amount)){ 
+            
+            players[_msgSender()].bootsterPacks += 1;
+        
+            emit   gamePlayed(_msgSender() , true  ,  easelevel , requiredGuess ,  actualGuess  ,  degreeOfRandomness ,  playchance );
          }
+         else{
+             emit   gamePlayed(_msgSender() , false ,  easelevel , requiredGuess ,  actualGuess  ,  degreeOfRandomness ,  playchance );
+         }
+         requiredGuess = 0 ;
+         actualGuess  = 0;   
+         degreeOfRandomness = 0;
+         playchance = 0;
+       players[_msgSender()].gamesPlayed += 1;
+        
          
-         
-        // update Player gameplay Count
-         
-       player storage currentPlayer = players[msg.sender];
-         currentPlayer.gamePlayed += 1;  
-         
+    }
+    
+    // charge function responsible for swapping token to ETH
+    function _charge(uint256 amount) private {
+        swapTokensForEth(amount);
+        emit charged(msg.sender , amount);
+    }
+    
+     // charge function responsible for swapping ETH to token
+    function _attack(uint256 EthRecieved) private {
+        swapEthForTokens(EthRecieved);
+        emit attacked(msg.sender , EthRecieved);
+    }
+    function unPack(uint256 amount) public {
+         player storage gameplayer = players[msg.sender];
+         require(amount > 0  && amount >= gameplayer.bootsterPacks , "Insuficient bootsterPacks");
+         gameplayer.bootsterPacks -= amount ;
+        for (uint256 i = 0 ; i < amount ; i++){
+            getReward();
+        }
+    }
+    
+    //approval for 10 COMMON must be called for this contract on the NFT BOOSTER contract to able to successfully exacute this function.
+    function reRollCommon() public {
+        require(_boosterNFT.balanceOf(_msgSender(),COMMON) >= commonRerollThreshold , "Insuficient COMMON Reroll balance, 1O common required! " );
+          _boosterNFT.burn(_msgSender() , COMMON , commonRerollThreshold);
+          if(attemptRoll(commonRerollChance)){
+              _boosterNFT.mintReward(_msgSender() , LEGENDARY);
+              emit rewardEarned(_msgSender() , LEGENDARY);
+          }
+          
+    }
+     //approval for 10 RARE must be called for this contract on the NFT BOOSTER contract to able to successfully exacute this function.
+    function reRollRare() public {
+        
+        require(_boosterNFT.balanceOf(_msgSender(),RARE) >= rareRerollThreshold , "Insuficient RARE Reroll balance, 1O rare required! " );
+          _boosterNFT.burn(_msgSender() , RARE , rareRerollThreshold);
+          if(attemptRoll(rareRerollChance)){
+              _boosterNFT.mintReward(_msgSender() , LEGENDARY);
+              emit rewardEarned(_msgSender() , LEGENDARY);
+          }
+          
     }
     function getReward() internal returns(bool){
-      chances storage playchance =  defaultChances;
-      player storage currentPlayer = players[msg.sender];
-      currentPlayer.rewardsEarned += 1;
-      //burn common treshhold for more legendary chance
-      if(currentPlayer.playerBoosterLevels.common >= commonBurnTreshold){
-          playchance.legendary += commonBurnRate;
-          currentPlayer.playerBoosterLevels.common = 0;
-          
-          
-      }
+      chances storage playerchance =  defaultChances;
+     
+      for (uint256 i = 0 ; i < 3 ; i++){
+          // atempt legendary
       
-      if(currentPlayer.playerBoosterLevels.rare >= rareBurnTreshold){
-           playchance.legendary += rareBurnRate;
-           currentPlayer.playerBoosterLevels.rare = 0;
+      if(attemptRoll(playerchance.legendary)){
+        _boosterNFT.mintReward(_msgSender() , LEGENDARY);
+        emit rewardEarned(_msgSender() , LEGENDARY);
       }
-      
-      // atempt legendary
-      
-      if(attemptRoll(playchance.legendary)){
-          currentPlayer.playerBoosterLevels.legendary += 1;
-          if(!isLengendary[msg.sender]){
-              isLengendary[msg.sender] = true;
-              lengendaryHolders.push(msg.sender);
-          }
-          return true;
-          
+      else if(attemptRoll(playerchance.rare)){
+        _boosterNFT.mintReward(_msgSender() , RARE); 
+         emit rewardEarned(_msgSender() , RARE);
       }
-      if(attemptRoll(playchance.rare)){
-           currentPlayer.playerBoosterLevels.rare += 1;
-           return true;
+     else {
+       _boosterNFT.mintReward(_msgSender() , COMMON); 
+       emit rewardEarned(_msgSender() , COMMON);
+       
+     }
       }
-      currentPlayer.playerBoosterLevels.common += 1;
-      
+      return true;
       
     }
-    // this function rolls based on the amount of token burnt 
+    // this function rolls based on the amount of token sent 
     function canGetReward(uint256 amount ) internal returns(bool)  {
-        if(amount < rareGrade ){
+        if(amount >= commonThreshold &&  amount < rareThreshold ){
+            playchance = commonGradeChance;
             return attemptRoll(commonGradeChance);
-        }else  if(amount < legendaryGrade){
+        }else  if(amount >= rareThreshold && amount < legendaryThreshold){
+            playchance = rareGradeChance;
             return attemptRoll(rareGradeChance);
-        }else {
+        }else if (amount >= legendaryThreshold){
+            playchance = legendaryGradeChance;
             return attemptRoll(legendaryGradeChance);
+        }
+        else {
+            playchance = 0;
+            return false;
         }
         
     }
@@ -864,17 +915,20 @@ contract piggyGame  is Ownable {
     function attemptRoll(uint256 chance) public  returns (bool) {
         
          // get degree of random ness
+         
       uint256  degree = getDegreeFromChance(chance);
+      degreeOfRandomness = degree;
       uint256  target = random(degree);
-      
+      requiredGuess = target;
       uint256 userRoll = random(degree);
+      actualGuess = userRoll;
       if(userRoll == target){
           return true;
       }
          return false;
     }
     
-    function getDegreeFromChance(uint chance ) internal returns (uint256 ){
+    function getDegreeFromChance(uint chance ) internal view returns (uint256 ){
         require(chance <= maxChance , "Invalid chance value");
         if(((maxChance - chance) <= 0) && (chance <= maxChance)){
             return maxChance/10;
@@ -888,20 +942,18 @@ contract piggyGame  is Ownable {
     uint256 randomnumber = uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender, nonce))) % rdegree;
     nonce++;
     return randomnumber;
-}
- // To receive BNB from testSwapRouter when swapping
-    receive() external payable {}
- /**
-     * @dev Update the swap router.
-     * Can only be called by the current operator.
-     */
-    function updateTestSwapRouter(address _router , address _piggyAddress ) public onlyOperator {
-        piggyAddress = _piggyAddress;
-        testSwapRouter = IUniswapV2Router02(_router);
-        testSwapPair = IUniswapV2Factory(testSwapRouter.factory()).getPair(_piggyAddress , testSwapRouter.WETH());
-        require(testSwapPair != address(0), "TEST::updateTestSwapRouter: Invalid pair address.");
-        emit TestSwapRouterUpdated(msg.sender, address(testSwapRouter), testSwapPair);
-    }   
+    
+    
+    }
+    //return available bootsterPack a player has
+    function bootsterPackBalanceOf(address _player) public view returns(uint256){
+        return players[_player].bootsterPacks;
+    }
+     //returns total number of games a player has played.
+    function totalgamePlayedOf(address _player) public view returns(uint256){
+        return players[_player].gamesPlayed;
+    }
+
     /// @dev Swap tokens for eth
     function swapTokensForEth(uint256 tokenAmount ) private {
         // generate the testSwap pair path of token -> weth
@@ -910,14 +962,11 @@ contract piggyGame  is Ownable {
         path[1] = testSwapRouter.WETH();
 
         _piggyToken.approve(address(testSwapRouter), tokenAmount);
-        // uint256 AmountsOut  =  testSwapRouter.getAmountsOut( tokenAmount , path );
         
-        // uint256 feesAndChurn = AmountsOut - (AmountsOut * 35 / 100);
-        // uint256 amountIn = AmountsOut - feesAndChurn;
         // make the swap
         testSwapRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
            tokenAmount ,
-            0, // 35% less eth for fees and churn
+            0, // get anything we can
             path,
              address(this),
             block.timestamp
@@ -930,20 +979,110 @@ contract piggyGame  is Ownable {
         path[0] = testSwapRouter.WETH();
         path[1] = piggyAddress;
 
-        
-        // uint256 AmountsOut  =  testSwapRouter.getAmountsOut(EthAmount , path );
-        
-        // uint256 feesAndChurn = AmountsOut - (AmountsOut * 35 / 100);
-        // uint256 amountIn = AmountsOut - feesAndChurn;
         // make the swap
         testSwapRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: EthAmount}(
-           0 ,// 35% less token for fees and churn 
+           0 ,// get anything we can
             path,
              address(this),
             block.timestamp
         );
     }
     
+     // To receive BNB from testSwapRouter when swapping
+    receive() external payable {}
+ /**
+     * @dev Update the swap router.
+     * Can only be called by the current operator.
+     */
+    function updateTestSwapRouter(address _router , address _piggyAddress ) public onlyOperator {
+        piggyAddress = _piggyAddress;
+        testSwapRouter = IUniswapV2Router02(_router);
+        testSwapPair = IUniswapV2Factory(testSwapRouter.factory()).getPair(_piggyAddress , testSwapRouter.WETH());
+        require(testSwapPair != address(0), "TEST::updateTestSwapRouter: Invalid pair address.");
+        emit TestSwapRouterUpdated(msg.sender, address(testSwapRouter), testSwapPair);
+    } 
+    function setGamePoolFundAddress(address _gamePoolFundAddress) public onlyOperator {
+        gamePoolFundAddress  = _gamePoolFundAddress;
+        emit gamePoolFundAddressUpdated(msg.sender , _gamePoolFundAddress);
+    }
+   
+     /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOperator(address newOperator) public  onlyOperator {
+        require(newOperator != address(0), " new operator is the zero address");
+        emit OperatorTransferred(_operator, newOperator);
+        _operator = newOperator;
+    }
+
+    // @dev  modify ease level ranges from 10 - 100;
+    // @_param easelevel
+     function setEaseLevel(uint256 _easelevel) public onlyOperator{
+         require( inRange(10 , 200  , _easelevel), "Ease level out of range");
+            easelevel = _easelevel;
+            emit gameEaseLevelUpdated(msg.sender , _easelevel);
+    }
+    // adjusting the default chances of getting a common a rar and a lengendary
+    //@_param_common chances for common
+    //@_param_rare chances for rare
+    //@_param_legendary chances for legendary
+    function setDefaultChances(uint256 commonChance   , uint256 rareChance  , uint256 legendaryChance  ) public onlyOperator {
+        require(
+            inRange(1 , 1000 ,commonChance ) &&
+             inRange(1 , 1000 , rareChance ) &&
+              inRange(1 , 1000 , legendaryChance ) , "Values out of range");
+              
+             defaultChances.legendary = legendaryChance ;
+             defaultChances.rare = rareChance ;
+             defaultChances.common = commonChance ;
+             emit defaultGameChanceUpdated(msg.sender ,commonChance , rareChance , legendaryChance );
+        
+    }
+    //set play Amount threshold
+    // play Amount threshold is the minimun of piggy that  can be sent for an increase in chance of getting booster pack;
+ 
+    function setAmountThreshold(uint256 _commonThreshold ,uint256 _rareThreshold, uint256 _legendaryThreshold ) public onlyOperator {
+      
+             commonThreshold = _commonThreshold;
+             rareThreshold = _rareThreshold;
+             legendaryThreshold = _legendaryThreshold;
+             
+             emit amountThresholdUpdated(msg.sender , _commonThreshold , _rareThreshold ,_legendaryThreshold);
+    }
+    
+    //set NFT reroll/ burn threshold
+    // reroll threshold is the amount of NFT to be burnt to give a certain chance of winning a legendary;
+    
+    function setRerollThreshold(uint256 _commonRerollThreshold ,uint256 _rareRerollThreshold ) public onlyOperator {
+      
+           emit rerollThresholdUpdated(msg.sender ,commonRerollThreshold ,  _commonRerollThreshold , rareRerollThreshold ,_rareRerollThreshold);
+            commonRerollThreshold = _commonRerollThreshold;
+            rareRerollThreshold = _rareRerollThreshold;
+             
+             
+    }
+     //set NFT reroll/ Chances
+    // reroll Chance is the Chance getting a legendary on a roll;
+    //value range from 1 - 1000 for value 0.1 - 100
+    
+    function setRerollChance(uint256 _commonRerollChance ,uint256 _rareRerollChance ) public onlyOperator {
+           require(
+               inRange(1 , 1000 ,_commonRerollChance ) && 
+               inRange(1 , 1000 ,_rareRerollChance) , "Values out of range");      
+           emit rerollChancesUpdated(msg.sender ,commonRerollChance ,  _commonRerollChance , rareRerollChance , _rareRerollChance);
+            commonRerollChance = _commonRerollChance;
+            rareRerollChance = _rareRerollChance;
+             
+    }
+    
+    function inRange(uint256 lowerLimit  , uint256  upperLimit, uint256 value) internal pure returns(bool){
+        if(value >= lowerLimit && value <= upperLimit) {
+            return true;
+        }
+        return false;
+    }
+     
 }
     
     
